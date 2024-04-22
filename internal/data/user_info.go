@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"github.com/shynggys9219/greenlight/internal/validator"
 	"golang.org/x/crypto/bcrypt"
 	"log"
@@ -132,38 +133,51 @@ func (m UserInfoModel) GetByID(id int64) (*UserInfo, error) {
 	return &info, nil
 }
 
-func (m UserInfoModel) GetAll() []*UserInfo {
-	query := "SELECT * FROM user_info ORDER BY id"
+func (m UserInfoModel) GetAll(name, surname string, filters Filters) ([]*UserInfo, Metadata, error) {
+	query := fmt.Sprintf("SELECT * FROM  WHERE (LOWER(name) = LOWER($1) OR $1 = '') AND (LOWER(surname) = LOWER($2) OR $2 = '') ORDER BY %s %s, id ASC LIMIT $3 OFFSET $4", filters.sortColumn(), filters.sortDirection())
 
-	rows, err := m.DB.Query(query)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	args := []any{name, surname, filters.limit(), filters.offset()}
+
+	rows, err := m.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil
+		return nil, Metadata{}, err
 	}
 
-	var infos []*UserInfo
+	defer rows.Close()
+
+	totalRecords := 0
+
+	infos := []*UserInfo{}
+
 	for rows.Next() {
-		info := &UserInfo{}
-		err = rows.Scan(
+		var info UserInfo
+		err := rows.Scan(
+			&totalRecords,
 			&info.ID,
+			&info.CreatedAt,
+			&info.UpdatedAt,
 			&info.Name,
 			&info.Surname,
 			&info.Email,
 			&info.Role,
-			&info.Activated,
-			&info.CreatedAt,
-			&info.UpdatedAt,
-			&info.Version,
-		)
+			&info.Activated)
 		if err != nil {
-			return nil
+			return nil, Metadata{}, err
 		}
-		infos = append(infos, info)
+
+		infos = append(infos, &info)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil
+		return nil, Metadata{}, err
 	}
-	return infos
+
+	metadata := calculateMetadata(totalRecords, filters.Page, filters.PageSize)
+
+	return infos, metadata, nil
 }
 
 func (m UserInfoModel) Update(info *UserInfo) error {
